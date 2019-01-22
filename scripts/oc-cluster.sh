@@ -2,14 +2,20 @@
 
 ## Script for installing and running `oc cluster up`
 ## Inspired by https://github.com/radanalyticsio/oshinko-cli/blob/master/.travis.yml
+OPENSHIFT_CLIENT_BINARY_URL=${OPENSHIFT_CLIENT_BINARY_URL:-'https://github.com/openshift/origin/releases/download/v3.11.0/openshift-origin-client-tools-v3.11.0-0cbc58b-linux-64bit.tar.gz'}
 
 ## Use this variable to get more control over downloading client binary
 OPENSHIFT_CLIENT_BINARY_URL=${OPENSHIFT_CLIENT_BINARY_URL:-'https://github.com/openshift/origin/releases/download/v3.11.0/openshift-origin-client-tools-v3.11.0-0cbc58b-linux-64bit.tar.gz'}
 
 sudo service docker stop
 
-sudo sed -i -e 's/sock/sock --insecure-registry 172.30.0.0\/16/' /etc/default/docker
-sudo cat /etc/default/docker
+sudo cat << EOF >/etc/docker/daemon.json
+{
+    "insecure-registries" : [ "172.30.0.0/16" ]
+}
+EOF
+
+sudo cat /etc/docker/daemon.json
 
 sudo service docker start
 sudo service docker status
@@ -33,7 +39,7 @@ while true; do
         oc cluster add --base-dir=$HOME/oscluster template-service-broker
         oc cluster add --base-dir=$HOME/oscluster automation-service-broker
     else
-        oc cluster up
+        oc cluster up --base-dir=$HOME/oscluster
     fi
     if [ "$?" -eq 0 ]; then
 	./scripts/travis-check-pods.sh

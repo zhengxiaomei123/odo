@@ -30,7 +30,7 @@ node('odo') {
 
     try{
         stage('Pre Setup Node'){
-            onmyduffynode '''yum -y install git wget gcc &&
+            onmyduffynode '''yum -y install git wget gcc docker &&
             wget https://dl.google.com/go/go1.11.2.linux-amd64.tar.gz &&
             tar -C /usr/local -xzf go1.11.2.linux-amd64.tar.gz'''
         }
@@ -41,7 +41,7 @@ node('odo') {
             cd  ${CLONE_DIR} && ls -la'''
         }
 
-        stage('Build binary') {
+/*        stage('Build binary') {
             onmyduffynode '''export PATH=$PATH:/usr/local/go/bin:/root/go/bin &&
             go version &&
             cd ${CLONE_DIR} && 
@@ -60,6 +60,19 @@ node('odo') {
             cd ${CLONE_DIR} &&
             make test |& tee unit_test.log'''
         }
+*/
+        timeout(20) {
+          stage('End2End Test') {
+              onmyduffynode '''export PATH=$PATH:/usr/local/go/bin &&
+              cd ${CLONE_DIR} &&
+              git checkout cico-test && 
+              echo "----------starting-----------" &&
+              ./scripts/oc-cluster.sh &&
+              echo "----------finished-----------" &&
+              cat /etc/docker/daemon.json'''
+          }
+        }
+
 
     }catch (e){
         currentBuild.result = "FAILED"
