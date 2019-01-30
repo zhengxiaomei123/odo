@@ -41,7 +41,7 @@ node('odo') {
             cd  ${CLONE_DIR} && ls -la'''
         }
 
-/*        stage('Build binary') {
+        stage('Build binary') {
             onmyduffynode '''export PATH=$PATH:/usr/local/go/bin:/root/go/bin &&
             go version &&
             cd ${CLONE_DIR} && 
@@ -60,19 +60,24 @@ node('odo') {
             cd ${CLONE_DIR} &&
             make test |& tee unit_test.log'''
         }
-*/
+/*
         timeout(20) {
           stage('End2End Test') {
               onmyduffynode '''export PATH=$PATH:/usr/local/go/bin &&
               cd ${CLONE_DIR} &&
               git checkout cico-test && 
+              rpm --query centos-release &&
               echo "----------starting-----------" &&
-              ./scripts/oc-cluster.sh &&
+              ./scripts/minishift-remote.sh &&
               echo "----------finished-----------" &&
-              cat /etc/docker/daemon.json'''
+              make &&
+              cp odo /usr/local/go/bin &&
+              odo version &&
+              make test-main-e2e
+              '''
           }
         }
-
+*/
 
     }catch (e){
         currentBuild.result = "FAILED"
