@@ -23,7 +23,10 @@ make test-cmd-watch
 make test-cmd-debug
 make test-cmd-login-logout
 make test-cmd-project
-make test-operator-hub
+make test-cmd-app
+make test-cmd-storage
+make test-cmd-push
+make test-cmd-watch
 
 # E2e tests
 make test-e2e-beta
