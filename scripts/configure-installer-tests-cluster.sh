@@ -14,7 +14,8 @@ KUBEADMIN_PASSWORD_FILE=${KUBEADMIN_PASSWORD_FILE:-"${DEFAULT_INSTALLER_ASSETS_D
 OC_STABLE_LOGIN="false"
 #CI_OPERATOR_HUB_PROJECT="ci-operator-hub-project"
 # Exported to current env
-export KUBECONFIG=${KUBECONFIG:-"${DEFAULT_INSTALLER_ASSETS_DIR}/auth/kubeconfig"}
+ORIGINAL_KUBECONFIG=${KUBECONFIG:-"${DEFAULT_INSTALLER_ASSETS_DIR}/auth/kubeconfig"}
+export KUBECONFIG=$ORIGINAL_KUBECONFIG
 
 # List of users to create
 USERS="developer odonoprojectattemptscreate odosingleprojectattemptscreate odologinnoproject odologinsingleproject1"
@@ -160,3 +161,9 @@ oc new-project myproject
 sleep 4
 oc version
 oc get secret pull-secret -n openshift-config -o yaml --export | oc create -f -
+
+# KUBECONFIG cleanup only if CI is set
+if [ ! -f $CI ]; then
+    rm -rf $KUBECONFIG
+    export KUBECONFIG=$ORIGINAL_KUBECONFIG
+fi

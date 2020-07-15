@@ -9,6 +9,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"github.com/zalando/go-keyring"
 	"k8s.io/klog"
 
 	"github.com/openshift/odo/pkg/catalog"
@@ -24,6 +25,7 @@ import (
 	catalogutil "github.com/openshift/odo/pkg/odo/cli/catalog/util"
 	"github.com/openshift/odo/pkg/odo/cli/component/ui"
 	projectCmd "github.com/openshift/odo/pkg/odo/cli/project"
+	registryUtil "github.com/openshift/odo/pkg/odo/cli/registry/util"
 	commonui "github.com/openshift/odo/pkg/odo/cli/ui"
 	"github.com/openshift/odo/pkg/odo/genericclioptions"
 	odoutil "github.com/openshift/odo/pkg/odo/util"
@@ -73,6 +75,7 @@ type DevfileMetadata struct {
 	devfileRegistry    catalog.Registry
 	devfilePath        devfilePath
 	starter            string
+	token              string
 }
 
 // CreateRecommendedCommandName is the recommended watch command name
@@ -83,7 +86,9 @@ const CreateRecommendedCommandName = "create"
 const LocalDirectoryDefaultLocation = "./"
 
 // Constants for devfile component
-const devFile = "devfile.yaml"
+const (
+	devFile = "devfile.yaml"
+)
 
 var (
 	envFile    = filepath.Join(".odo", "env", "env.yaml")
@@ -430,6 +435,7 @@ func (co *CreateOptions) Complete(name string, cmd *cobra.Command, args []string
 					componentNamespace = ui.EnterDevfileComponentNamespace(defaultComponentNamespace)
 				}
 			}
+
 		} else {
 			// Direct mode (User enters the full command)
 
@@ -471,6 +477,9 @@ func (co *CreateOptions) Complete(name string, cmd *cobra.Command, args []string
 				if err != nil {
 					return err
 				}
+				if co.devfileMetadata.devfileRegistry.Name != "" && catalogDevfileList.Items == nil {
+					return errors.Errorf("Can't create devfile component from registry %s", co.devfileMetadata.devfileRegistry.Name)
+				}
 
 				if len(catalogDevfileList.DevfileRegistries) == 0 {
 					isDevfileRegistryPresent = false
@@ -478,12 +487,15 @@ func (co *CreateOptions) Complete(name string, cmd *cobra.Command, args []string
 				}
 			}
 
-			// Component namespace: Get from --project flag, by default it is the current active namespace
-			if cmd.Flags().Changed("project") && !pushtarget.IsPushTargetDocker() {
-				componentNamespace, err = cmd.Flags().GetString("project")
+			// Component namespace: Get from --project flag or --namespace flag, by default it is the current active namespace
+			if co.devfileMetadata.componentNamespace == "" && !pushtarget.IsPushTargetDocker() {
+
+				// Check to see if we've passed in "project", if not, default to the standard Kubernetes namespace
+				componentNamespace, err = retrieveCmdNamespace(cmd)
 				if err != nil {
 					return err
 				}
+
 			} else {
 				componentNamespace = defaultComponentNamespace
 			}
@@ -836,12 +848,15 @@ func (co *CreateOptions) downloadProject(projectPassed string) error {
 	if err != nil {
 		return err
 	}
+
+	// Retrieve projects
 	projects := devObj.Data.GetProjects()
 	nOfProjects := len(projects)
 	if nOfProjects == 0 {
 		return errors.Errorf("No project found in devfile component.")
 	}
 
+	// Determine what project to be used
 	if nOfProjects == 1 && projectPassed == defaultProjectName {
 		project = projects[0]
 	} else if nOfProjects > 1 && projectPassed == defaultProjectName {
@@ -861,6 +876,7 @@ func (co *CreateOptions) downloadProject(projectPassed string) error {
 		}
 	}
 
+	// Retrieve the working directory in order to clone correctly
 	path, err := os.Getwd()
 	if err != nil {
 		return errors.Wrapf(err, "Could not get the current working directory.")
@@ -869,6 +885,8 @@ func (co *CreateOptions) downloadProject(projectPassed string) error {
 	if project.ClonePath != "" {
 		clonePath := project.ClonePath
 		if runtime.GOOS == "windows" {
+			//TODO: This is a bad implementation.. we should be using FromSlash
+			// https://golang.org/pkg/path/filepath/#FromSlash
 			clonePath = strings.Replace(clonePath, "\\", "/", -1)
 		}
 
@@ -876,11 +894,12 @@ func (co *CreateOptions) downloadProject(projectPassed string) error {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			err = os.MkdirAll(path, os.FileMode(0755))
 			if err != nil {
-				return errors.Wrap(err, "Failed creating folder with path: "+path)
+				return errors.Wrap(err, "failed creating folder with path: "+path)
 			}
 		}
 	}
 
+	// We will check to see if the project has a valid directory
 	err = util.IsValidProjectDir(path, DevfilePath)
 	if err != nil {
 		return err
@@ -889,23 +908,23 @@ func (co *CreateOptions) downloadProject(projectPassed string) error {
 	var url, sparseDir string
 	if project.Git != nil {
 		if strings.Contains(project.Git.Location, "github.com") {
-			url, err = util.GetGitHubZipURL(project.Git.Location)
+			url, err = util.GetGitHubZipURL(project.Git.Location, project.Git.Branch, project.Git.StartPoint)
 			if err != nil {
 				return err
 			}
 			sparseDir = project.Git.SparseCheckoutDir
 		} else {
-			return errors.Errorf("Project type git with non github url not supported")
+			return errors.Errorf("project type git with non github url not supported")
 		}
 	} else if project.Github != nil {
-		url, err = util.GetGitHubZipURL(project.Github.Location)
+		url, err = util.GetGitHubZipURL(project.Github.Location, project.Github.Branch, project.Github.StartPoint)
 		if err != nil {
 			return err
 		}
 		sparseDir = project.Github.SparseCheckoutDir
 	} else if project.Zip != nil {
 		url = project.Zip.Location
-		sparseDir = project.Github.SparseCheckoutDir
+		sparseDir = project.Zip.SparseCheckoutDir
 	} else {
 		return errors.Errorf("Project type not supported")
 	}
@@ -927,7 +946,14 @@ func (co *CreateOptions) Run() (err error) {
 			if co.devfileMetadata.devfilePath.value != "" {
 				if co.devfileMetadata.devfilePath.protocol == "http(s)" {
 					// User specify devfile path is http(s) URL
-					err = util.DownloadFile(co.devfileMetadata.devfilePath.value, DevfilePath)
+					params := util.DownloadParams{
+						Request: util.HTTPRequestParams{
+							URL:   co.devfileMetadata.devfilePath.value,
+							Token: co.devfileMetadata.token,
+						},
+						Filepath: DevfilePath,
+					}
+					err = util.DownloadFile(params)
 					if err != nil {
 						return errors.Wrapf(err, "failed to download devfile for devfile component from %s", co.devfileMetadata.devfilePath.value)
 					}
@@ -946,7 +972,20 @@ func (co *CreateOptions) Run() (err error) {
 
 			if !util.CheckPathExists(DevfilePath) {
 				// Download devfile from registry
-				err := util.DownloadFile(co.devfileMetadata.devfileRegistry.URL+co.devfileMetadata.devfileLink, DevfilePath)
+				params := util.DownloadParams{
+					Request: util.HTTPRequestParams{
+						URL: co.devfileMetadata.devfileRegistry.URL + co.devfileMetadata.devfileLink,
+					},
+					Filepath: DevfilePath,
+				}
+				if registryUtil.IsSecure(co.devfileMetadata.devfileRegistry.Name) {
+					token, err := keyring.Get(util.CredentialPrefix+co.devfileMetadata.devfileRegistry.Name, "default")
+					if err != nil {
+						return errors.Wrap(err, "unable to get secure registry credential from keyring")
+					}
+					params.Request.Token = token
+				}
+				err := util.DownloadFile(params)
 				if err != nil {
 					return errors.Wrapf(err, "failed to download devfile for devfile component from %s", co.devfileMetadata.devfileRegistry.URL+co.devfileMetadata.devfileLink)
 				}
@@ -1093,7 +1132,7 @@ func NewCmdCreate(name, fullName string) *cobra.Command {
 	}
 	componentCreateCmd.Flags().StringVarP(&co.componentBinary, "binary", "b", "", "Create a binary file component component using given artifact. Works only with Java components. File needs to be in the context directory.")
 	componentCreateCmd.Flags().StringVarP(&co.componentGit, "git", "g", "", "Create a git component using this repository.")
-	componentCreateCmd.Flags().StringVarP(&co.componentGitRef, "ref", "r", "", "Use a specific ref e.g. commit, branch or tag of the git repository")
+	componentCreateCmd.Flags().StringVarP(&co.componentGitRef, "ref", "r", "", "Use a specific ref e.g. commit, branch or tag of the git repository (only valid for --git components)")
 	genericclioptions.AddContextFlag(componentCreateCmd, &co.componentContext)
 	componentCreateCmd.Flags().StringVar(&co.memory, "memory", "", "Amount of memory to be allocated to the component. ex. 100Mi (sets min-memory and max-memory to this value)")
 	componentCreateCmd.Flags().StringVar(&co.memoryMin, "min-memory", "", "Limit minimum amount of memory to be allocated to the component. ex. 100Mi")
@@ -1109,6 +1148,7 @@ func NewCmdCreate(name, fullName string) *cobra.Command {
 		componentCreateCmd.Flags().Lookup("starter").NoOptDefVal = defaultProjectName //Default value to pass to the flag if one is not specified.
 		componentCreateCmd.Flags().StringVar(&co.devfileMetadata.devfileRegistry.Name, "registry", "", "Create devfile component from specific registry")
 		componentCreateCmd.Flags().StringVar(&co.devfileMetadata.devfilePath.value, "devfile", "", "Path to the user specify devfile")
+		componentCreateCmd.Flags().StringVar(&co.devfileMetadata.token, "token", "", "Token to be used when downloading devfile from the devfile path that is specified via --devfile")
 	}
 
 	componentCreateCmd.SetUsageTemplate(odoutil.CmdUsageTemplate)

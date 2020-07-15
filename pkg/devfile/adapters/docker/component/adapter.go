@@ -2,6 +2,8 @@ package component
 
 import (
 	"fmt"
+	"io"
+	"reflect"
 	"strings"
 
 	"github.com/docker/docker/api/types"
@@ -10,6 +12,8 @@ import (
 	"k8s.io/klog"
 
 	"github.com/openshift/odo/pkg/devfile/adapters/common"
+	versionsCommon "github.com/openshift/odo/pkg/devfile/parser/data/common"
+
 	"github.com/openshift/odo/pkg/devfile/adapters/docker/storage"
 	"github.com/openshift/odo/pkg/devfile/adapters/docker/utils"
 	"github.com/openshift/odo/pkg/lclient"
@@ -142,9 +146,9 @@ func (a Adapter) Push(parameters common.PushParameters) (err error) {
 }
 
 // DoesComponentExist returns true if a component with the specified name exists, false otherwise
-func (a Adapter) DoesComponentExist(cmpName string) bool {
-	componentExists, _ := utils.ComponentExists(a.Client, a.Devfile.Data, cmpName)
-	return componentExists
+func (a Adapter) DoesComponentExist(cmpName string) (bool, error) {
+	componentExists, err := utils.ComponentExists(a.Client, a.Devfile.Data, cmpName)
+	return componentExists, err
 }
 
 // getFirstContainerWithSourceVolume returns the first container that set mountSources: true
@@ -171,6 +175,9 @@ func (a Adapter) Delete(labels map[string]string) error {
 		return errors.New("unable to delete component without a component label")
 	}
 
+	spinner := log.Spinnerf("Deleting devfile component %s", componentName)
+	defer spinner.End(false)
+
 	containers, err := a.Client.GetContainerList()
 	if err != nil {
 		return errors.Wrap(err, "unable to retrieve container list for delete operation")
@@ -196,7 +203,9 @@ func (a Adapter) Delete(labels map[string]string) error {
 	componentContainer := a.Client.GetContainersByComponent(componentName, containers)
 
 	if len(componentContainer) == 0 {
-		return errors.Errorf("the component %s doesn't exist", a.ComponentName)
+		spinner.End(false)
+		log.Warningf("Component %s does not exist", componentName)
+		return nil
 	}
 
 	allVolumes, err := a.Client.GetVolumes()
@@ -269,6 +278,49 @@ func (a Adapter) Delete(labels map[string]string) error {
 		}
 	}
 
+	spinner.End(true)
+	log.Successf("Successfully deleted component")
+
 	return nil
 
+}
+
+// Log returns log from component
+func (a Adapter) Log(follow, debug bool) (io.ReadCloser, error) {
+
+	exists, err := utils.ComponentExists(a.Client, a.Devfile.Data, a.ComponentName)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if !exists {
+		return nil, errors.Errorf("the component %s doesn't exist on the cluster", a.ComponentName)
+	}
+
+	containers, err := utils.GetComponentContainers(a.Client, a.ComponentName)
+	if err != nil {
+		return nil, errors.Wrapf(err, "error while retrieving container for odo component %s", a.ComponentName)
+	}
+
+	var command versionsCommon.DevfileCommand
+	if debug {
+		command, err = common.GetDebugCommand(a.Devfile.Data, "")
+		if err != nil {
+			return nil, err
+		}
+		if reflect.DeepEqual(versionsCommon.DevfileCommand{}, command) {
+			return nil, errors.Errorf("no debug command found in devfile, please run \"odo log\" for run command logs")
+		}
+
+	} else {
+		command, err = common.GetRunCommand(a.Devfile.Data, "")
+		if err != nil {
+			return nil, err
+		}
+
+	}
+	containerID := utils.GetContainerIDForAlias(containers, command.Exec.Component)
+
+	return a.Client.GetContainerLogs(containerID, follow)
 }

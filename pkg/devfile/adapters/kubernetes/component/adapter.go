@@ -2,9 +2,11 @@ package component
 
 import (
 	"fmt"
+	"io"
 	"reflect"
 
 	"github.com/openshift/odo/pkg/exec"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -15,7 +17,6 @@ import (
 	"github.com/openshift/odo/pkg/component"
 	"github.com/openshift/odo/pkg/config"
 	"github.com/openshift/odo/pkg/devfile/adapters/common"
-	adaptersCommon "github.com/openshift/odo/pkg/devfile/adapters/common"
 	"github.com/openshift/odo/pkg/devfile/adapters/kubernetes/storage"
 	"github.com/openshift/odo/pkg/devfile/adapters/kubernetes/utils"
 	versionsCommon "github.com/openshift/odo/pkg/devfile/parser/data/common"
@@ -24,6 +25,7 @@ import (
 	"github.com/openshift/odo/pkg/machineoutput"
 	odoutil "github.com/openshift/odo/pkg/odo/util"
 	"github.com/openshift/odo/pkg/sync"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // New instantiantes a component adapter
@@ -59,7 +61,10 @@ type Adapter struct {
 // Push updates the component if a matching component exists or creates one if it doesn't exist
 // Once the component has started, it will sync the source code to it.
 func (a Adapter) Push(parameters common.PushParameters) (err error) {
-	componentExists := utils.ComponentExists(a.Client, a.ComponentName)
+	componentExists, err := utils.ComponentExists(a.Client, a.ComponentName)
+	if err != nil {
+		return errors.Wrapf(err, "unable to determine if component %s exists", a.ComponentName)
+	}
 
 	a.devfileInitCmd = parameters.DevfileInitCmd
 	a.devfileBuildCmd = parameters.DevfileBuildCmd
@@ -140,7 +145,7 @@ func (a Adapter) Push(parameters common.PushParameters) (err error) {
 		PodName:       pod.GetName(),
 		SourceMount:   sourceMount,
 	}
-	syncParams := adaptersCommon.SyncParameters{
+	syncParams := common.SyncParameters{
 		PushParams:      parameters,
 		CompInfo:        compInfo,
 		ComponentExists: componentExists,
@@ -163,7 +168,7 @@ func (a Adapter) Push(parameters common.PushParameters) (err error) {
 }
 
 // DoesComponentExist returns true if a component with the specified name exists, false otherwise
-func (a Adapter) DoesComponentExist(cmpName string) bool {
+func (a Adapter) DoesComponentExist(cmpName string) (bool, error) {
 	return utils.ComponentExists(a.Client, cmpName)
 }
 
@@ -193,7 +198,7 @@ func (a Adapter) createOrUpdateComponent(componentExists bool) (err error) {
 
 	kclient.AddBootstrapSupervisordInitContainer(podTemplateSpec)
 
-	componentAliasToVolumes := adaptersCommon.GetVolumes(a.Devfile)
+	componentAliasToVolumes := common.GetVolumes(a.Devfile)
 
 	var uniqueStorages []common.Storage
 	volumeNameToPVCName := make(map[string]string)
@@ -251,7 +256,7 @@ func (a Adapter) createOrUpdateComponent(componentExists bool) (err error) {
 	klog.V(4).Infof("Creating deployment %v", deploymentSpec.Template.GetName())
 	klog.V(4).Infof("The component name is %v", componentName)
 
-	if utils.ComponentExists(a.Client, componentName) {
+	if componentExists {
 		// If the component already exists, get the resource version of the deploy before updating
 		klog.V(4).Info("The component already exists, attempting to update it")
 		deployment, err := a.Client.UpdateDeployment(*deploymentSpec)
@@ -444,9 +449,66 @@ func getFirstContainerWithSourceVolume(containers []corev1.Container) (string, s
 
 // Delete deletes the component
 func (a Adapter) Delete(labels map[string]string) error {
-	if !utils.ComponentExists(a.Client, a.ComponentName) {
-		return errors.Errorf("the component %s doesn't exist on the cluster", a.ComponentName)
+	spinner := log.Spinnerf("Deleting devfile component %s", a.ComponentName)
+	defer spinner.End(false)
+
+	componentExists, err := utils.ComponentExists(a.Client, a.ComponentName)
+	if kerrors.IsForbidden(err) {
+		klog.V(4).Infof("Resource for %s forbidden", a.ComponentName)
+		// log the error if it failed to determine if the component exists due to insufficient RBACs
+		spinner.End(false)
+		log.Warningf("%v", err)
+		return nil
+	} else if err != nil {
+		return errors.Wrapf(err, "unable to determine if component %s exists", a.ComponentName)
 	}
 
-	return a.Client.DeleteDeployment(labels)
+	if !componentExists {
+		spinner.End(false)
+		log.Warningf("Component %s does not exist", a.ComponentName)
+		return nil
+	}
+
+	err = a.Client.DeleteDeployment(labels)
+	if err != nil {
+		return err
+	}
+
+	spinner.End(true)
+	log.Successf("Successfully deleted component")
+	return nil
+}
+
+// Log returns log from component
+func (a Adapter) Log(follow, debug bool) (io.ReadCloser, error) {
+
+	pod, err := a.Client.GetPodUsingComponentName(a.ComponentName)
+	if err != nil {
+		return nil, errors.Errorf("the component %s doesn't exist on the cluster", a.ComponentName)
+	}
+
+	if pod.Status.Phase != corev1.PodRunning {
+		return nil, errors.Errorf("unable to show logs, component is not in running state. current status=%v", pod.Status.Phase)
+	}
+
+	var command versionsCommon.DevfileCommand
+	if debug {
+		command, err = common.GetDebugCommand(a.Devfile.Data, "")
+		if err != nil {
+			return nil, err
+		}
+		if reflect.DeepEqual(versionsCommon.DevfileCommand{}, command) {
+			return nil, errors.Errorf("no debug command found in devfile, please run \"odo log\" for run command logs")
+		}
+
+	} else {
+		command, err = common.GetRunCommand(a.Devfile.Data, "")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	containerName := command.Exec.Component
+
+	return a.Client.GetPodLogs(pod.Name, containerName, follow)
 }

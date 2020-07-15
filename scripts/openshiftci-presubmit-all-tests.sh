@@ -15,6 +15,19 @@ export ARTIFACTS_DIR="/tmp/artifacts"
 export CUSTOM_HOMEDIR=$ARTIFACTS_DIR
 export ODO_BOOTSTRAPPER_IMAGE=quay.io/zhengxiaomei123/odo4z:1.1.3-s390x
 
+# Copy kubeconfig to temporary kubeconfig file
+# Read and Write permission to temporary kubeconfig file
+TMP_DIR=$(mktemp -d)
+cp $KUBECONFIG $TMP_DIR/kubeconfig
+chmod 640 $TMP_DIR/kubeconfig
+export KUBECONFIG=$TMP_DIR/kubeconfig
+
+# Login as developer
+odo login -u developer -p developer
+
+# Check login user name for debugging purpose
+oc whoami
+
 # Integration tests
 make test-generic
 make test-cmd-link-unlink
