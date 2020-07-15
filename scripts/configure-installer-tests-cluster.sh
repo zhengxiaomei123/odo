@@ -80,13 +80,13 @@ oc annotate istag/nodejs:latest tags=builder -n openshift --overwrite
 oc import-image java:8 --namespace=openshift --from=registry.redhat.io/redhat-openjdk-18/openjdk18-openshift --confirm
 sleep 5
 oc annotate istag/java:8 --namespace=openshift tags=builder --overwrite
-oc apply -n openshift -f https://raw.githubusercontent.com/openshift/library/master/arch/s390x/official/ruby/imagestreams/ruby-rhel7-s390x.json
+oc apply -n openshift -f https://raw.githubusercontent.com/openshift/library/master/arch/s390x/official/ruby/imagestreams/ruby-rhel7.json
 sleep 5
 oc annotate istag/ruby:latest --namespace=openshift tags=builder --overwrite
 oc import-image wildfly --confirm \--from docker.io/clefos/wildfly-120-centos7:latest --insecure -n openshift
 sleep 5
 oc annotate istag/wildfly:latest --namespace=openshift tags=builder --overwrite
-oc apply -n openshift -f https://raw.githubusercontent.com/openshift/library/master/arch/s390x/official/nginx/imagestreams/nginx-rhel7-s390x.json
+oc apply -n openshift -f https://raw.githubusercontent.com/openshift/library/master/arch/s390x/official/nginx/imagestreams/nginx-rhel7.json
 sleep 5
 oc annotate istag/nginx:latest --namespace=openshift tags=builder --overwrite
 oc apply -n openshift -f https://raw.githubusercontent.com/openshift/library/master/community/dotnet/imagestreams/dotnet-centos7.json
