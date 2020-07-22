@@ -16,6 +16,7 @@ import (
 
 	"github.com/openshift/odo/pkg/devfile/adapters/docker/storage"
 	"github.com/openshift/odo/pkg/devfile/adapters/docker/utils"
+	"github.com/openshift/odo/pkg/exec"
 	"github.com/openshift/odo/pkg/lclient"
 	"github.com/openshift/odo/pkg/log"
 	"github.com/openshift/odo/pkg/machineoutput"
@@ -134,6 +135,16 @@ func (a Adapter) Push(parameters common.PushParameters) (err error) {
 		return errors.Wrapf(err, "failed to sync to component with name %s", a.ComponentName)
 	}
 
+	// PostStart events from the devfile will only be executed when the component
+	// didn't previously exist
+	if !componentExists {
+		log.Infof("\nExecuting preStart lifecycle event commands for component %s", a.ComponentName)
+		err = a.execDevfileEvent(a.Devfile.Data.GetEvents().PostStart, containers)
+		if err != nil {
+			return err
+		}
+	}
+
 	if execRequired {
 		log.Infof("\nExecuting devfile commands for component %s", a.ComponentName)
 		err = a.execDevfile(pushDevfileCommands, componentExists, parameters.Show, containers)
@@ -142,6 +153,33 @@ func (a Adapter) Push(parameters common.PushParameters) (err error) {
 		}
 	}
 
+	return nil
+}
+
+// Test runs the devfile test command
+func (a Adapter) Test(testCmd string, show bool) (err error) {
+	componentExists, err := utils.ComponentExists(a.Client, a.Devfile.Data, a.ComponentName)
+	if err != nil {
+		return errors.Wrapf(err, "unable to determine if component %s exists", a.ComponentName)
+	}
+	if !componentExists {
+		return fmt.Errorf("component does not exist, a valid component is required to run 'odo test'")
+	}
+
+	containers, err := utils.GetComponentContainers(a.Client, a.ComponentName)
+	if err != nil {
+		return errors.Wrapf(err, "error while retrieving container for odo component %s", a.ComponentName)
+	}
+	log.Infof("\nExecuting devfile test command for component %s", a.ComponentName)
+	testCommand, err := common.ValidateAndGetTestDevfileCommands(a.Devfile.Data, testCmd)
+	if err != nil {
+		return errors.Wrap(err, "failed to validate devfile test command")
+	}
+
+	err = a.execTestCmd(testCommand, containers, show)
+	if err != nil {
+		return errors.Wrapf(err, "failed to execute devfile commands for component %s", a.ComponentName)
+	}
 	return nil
 }
 
@@ -323,4 +361,33 @@ func (a Adapter) Log(follow, debug bool) (io.ReadCloser, error) {
 	containerID := utils.GetContainerIDForAlias(containers, command.Exec.Component)
 
 	return a.Client.GetContainerLogs(containerID, follow)
+}
+
+// Exec executes a command in the component
+func (a Adapter) Exec(command []string) error {
+	exists, err := utils.ComponentExists(a.Client, a.Devfile.Data, a.ComponentName)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return errors.Errorf("the component %s doesn't exist on the cluster", a.ComponentName)
+	}
+
+	containers, err := utils.GetComponentContainers(a.Client, a.ComponentName)
+	if err != nil {
+		return errors.Wrapf(err, "error while retrieving container for odo component %s", a.ComponentName)
+	}
+
+	runCommand, err := common.GetRunCommand(a.Devfile.Data, "")
+	if err != nil {
+		return err
+	}
+	containerName := runCommand.Exec.Component
+	containerID := utils.GetContainerIDForAlias(containers, containerName)
+
+	componentInfo := common.ComponentInfo{
+		ContainerName: containerID,
+	}
+
+	return exec.ExecuteCommand(&a.Client, componentInfo, command, true, nil, nil)
 }

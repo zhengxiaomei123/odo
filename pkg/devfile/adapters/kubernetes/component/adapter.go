@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 
 	"github.com/openshift/odo/pkg/exec"
 
@@ -156,6 +157,16 @@ func (a Adapter) Push(parameters common.PushParameters) (err error) {
 		return errors.Wrapf(err, "Failed to sync to component with name %s", a.ComponentName)
 	}
 
+	// PostStart events from the devfile will only be executed when the component
+	// didn't previously exist
+	if !componentExists {
+		log.Infof("\nExecuting preStart lifecycle event commands for component %s", a.ComponentName)
+		err = a.execDevfileEvent(a.Devfile.Data.GetEvents().PostStart, pod.GetName())
+		if err != nil {
+			return err
+		}
+	}
+
 	if execRequired {
 		log.Infof("\nExecuting devfile commands for component %s", a.ComponentName)
 		err = a.execDevfile(pushDevfileCommands, componentExists, parameters.Show, pod.GetName(), pod.Spec.Containers, parameters.Debug)
@@ -164,6 +175,29 @@ func (a Adapter) Push(parameters common.PushParameters) (err error) {
 		}
 	}
 
+	return nil
+}
+
+// Test runs the devfile test command
+func (a Adapter) Test(testCmd string, show bool) (err error) {
+	pod, err := a.Client.GetPodUsingComponentName(a.ComponentName)
+	if err != nil {
+		return fmt.Errorf("error occurred while getting the pod: %w", err)
+	}
+	if pod.Status.Phase != corev1.PodRunning {
+		return fmt.Errorf("pod for component %s is not running", a.ComponentName)
+	}
+
+	log.Infof("\nExecuting devfile test command for component %s", a.ComponentName)
+
+	testCommand, err := common.ValidateAndGetTestDevfileCommands(a.Devfile.Data, testCmd)
+	if err != nil {
+		return errors.Wrap(err, "failed to validate devfile test command")
+	}
+	err = a.execTestCmd(testCommand, pod.GetName(), show)
+	if err != nil {
+		return errors.Wrapf(err, "failed to execute devfile commands for component %s", a.ComponentName)
+	}
 	return nil
 }
 
@@ -354,7 +388,7 @@ func (a Adapter) execDevfile(commandsMap common.PushCommandsMap, componentExists
 		command, ok := commandsMap[versionsCommon.InitCommandGroupType]
 		if ok {
 			compInfo.ContainerName = command.Exec.Component
-			err = exec.ExecuteDevfileBuildAction(&a.Client, *command.Exec, command.Exec.Id, compInfo, show, a.machineEventLogger)
+			err = exec.ExecuteDevfileCommandSynchronously(&a.Client, *command.Exec, command.Exec.Id, compInfo, show, a.machineEventLogger)
 			if err != nil {
 				return err
 			}
@@ -367,7 +401,7 @@ func (a Adapter) execDevfile(commandsMap common.PushCommandsMap, componentExists
 	command, ok := commandsMap[versionsCommon.BuildCommandGroupType]
 	if ok {
 		compInfo.ContainerName = command.Exec.Component
-		err = exec.ExecuteDevfileBuildAction(&a.Client, *command.Exec, command.Exec.Id, compInfo, show, a.machineEventLogger)
+		err = exec.ExecuteDevfileCommandSynchronously(&a.Client, *command.Exec, command.Exec.Id, compInfo, show, a.machineEventLogger)
 		if err != nil {
 			return err
 		}
@@ -410,6 +444,44 @@ func (a Adapter) execDevfile(commandsMap common.PushCommandsMap, componentExists
 
 	}
 
+	return
+}
+
+// TODO: Support Composite
+// execDevfileEvent receives a Devfile Event (PostStart, PreStop etc.) and loops through them
+// Each Devfile Command associated with the given event is retrieved, and executed in the container specified
+// in the command
+func (a Adapter) execDevfileEvent(events []string, podName string) error {
+	if len(events) > 0 {
+		commandMap := common.GetCommandMap(a.Devfile.Data)
+		for _, commandName := range events {
+			// Convert commandName to lower because GetCommands converts Command.Exec.Id's to lower
+			command := commandMap[strings.ToLower(commandName)]
+
+			compInfo := common.ComponentInfo{
+				ContainerName: command.Exec.Component,
+				PodName:       podName,
+			}
+
+			// If composite would go here & recursive loop
+
+			// Execute command in pod
+			err := exec.ExecuteDevfileCommandSynchronously(&a.Client, *command.Exec, command.Exec.Id, compInfo, false, a.machineEventLogger)
+			if err != nil {
+				return errors.Wrapf(err, "unable to execute devfile command "+commandName)
+			}
+		}
+	}
+	return nil
+}
+
+// Executes the test command in the pod
+func (a Adapter) execTestCmd(testCmd versionsCommon.DevfileCommand, podName string, show bool) (err error) {
+	compInfo := common.ComponentInfo{
+		PodName: podName,
+	}
+	compInfo.ContainerName = testCmd.Exec.Component
+	err = exec.ExecuteDevfileCommandSynchronously(&a.Client, *testCmd.Exec, testCmd.Exec.Id, compInfo, show, a.machineEventLogger)
 	return
 }
 
@@ -511,4 +583,39 @@ func (a Adapter) Log(follow, debug bool) (io.ReadCloser, error) {
 	containerName := command.Exec.Component
 
 	return a.Client.GetPodLogs(pod.Name, containerName, follow)
+}
+
+// Exec executes a command in the component
+func (a Adapter) Exec(command []string) error {
+	exists, err := utils.ComponentExists(a.Client, a.ComponentName)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		return errors.Errorf("the component %s doesn't exist on the cluster", a.ComponentName)
+	}
+
+	runCommand, err := common.GetRunCommand(a.Devfile.Data, "")
+	if err != nil {
+		return err
+	}
+	containerName := runCommand.Exec.Component
+
+	// get the pod
+	pod, err := a.Client.GetPodUsingComponentName(a.ComponentName)
+	if err != nil {
+		return errors.Wrapf(err, "unable to get pod for component %s", a.ComponentName)
+	}
+
+	if pod.Status.Phase != corev1.PodRunning {
+		return fmt.Errorf("unable to exec as the component is not running. Current status=%v", pod.Status.Phase)
+	}
+
+	componentInfo := common.ComponentInfo{
+		PodName:       pod.Name,
+		ContainerName: containerName,
+	}
+
+	return exec.ExecuteCommand(&a.Client, componentInfo, command, true, nil, nil)
 }

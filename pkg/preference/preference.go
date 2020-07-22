@@ -29,6 +29,9 @@ const (
 	// DefaultPushTimeout is the default timeout for pods (in seconds)
 	DefaultPushTimeout = 240
 
+	// DefaultBuildTimeout is the default build timeout for pods (in seconds)
+	DefaultBuildTimeout = 300
+
 	// UpdateNotificationSetting is the name of the setting controlling update notification
 	UpdateNotificationSetting = "UpdateNotification"
 
@@ -43,6 +46,9 @@ const (
 
 	// TimeoutSetting is the name of the setting controlling timeout for connection check
 	TimeoutSetting = "Timeout"
+
+	// BuildTimeoutSetting is the name of the setting controlling BuildTimeout
+	BuildTimeoutSetting = "BuildTimeout"
 
 	// PushTimeoutSetting is the name of the setting controlling PushTimeout
 	PushTimeoutSetting = "PushTimeout"
@@ -80,6 +86,9 @@ var TimeoutSettingDescription = fmt.Sprintf("Timeout (in seconds) for OpenShift 
 // PushTimeoutSettingDescription adds a description for PushTimeout
 var PushTimeoutSettingDescription = fmt.Sprintf("PushTimeout (in seconds) for waiting for a Pod to come up (Default: %d)", DefaultPushTimeout)
 
+// BuildTimeoutSettingDescription adds a description for BuildTimeout
+var BuildTimeoutSettingDescription = fmt.Sprintf("BuildTimeout (in seconds) for waiting for a build of the git component to complete (Default: %d)", DefaultBuildTimeout)
+
 // This value can be provided to set a seperate directory for users 'homedir' resolution
 // note for mocking purpose ONLY
 var customHomeDir = os.Getenv("CUSTOM_HOMEDIR")
@@ -90,6 +99,7 @@ var (
 		UpdateNotificationSetting: UpdateNotificationSettingDescription,
 		NamePrefixSetting:         NamePrefixSettingDescription,
 		TimeoutSetting:            TimeoutSettingDescription,
+		BuildTimeoutSetting:       BuildTimeoutSettingDescription,
 		PushTimeoutSetting:        PushTimeoutSettingDescription,
 		ExperimentalSetting:       ExperimentalDescription,
 		PushTargetSetting:         PushTargetDescription,
@@ -116,6 +126,9 @@ type OdoSettings struct {
 
 	// Timeout for OpenShift server connection check
 	Timeout *int `yaml:"Timeout,omitempty"`
+
+	// BuildTimeout for OpenShift build timeout check
+	BuildTimeout *int `yaml:"BuildTimeout,omitempty"`
 
 	// PushTimeout for OpenShift pod timeout check
 	PushTimeout *int `yaml:"PushTimeout,omitempty"`
@@ -334,6 +347,16 @@ func (c *PreferenceInfo) SetConfiguration(parameter string, value string) error 
 			}
 			c.OdoSettings.Timeout = &typedval
 
+		case "buildtimeout":
+			typedval, err := strconv.Atoi(value)
+			if err != nil {
+				return errors.Wrapf(err, "unable to set %s to %s", parameter, value)
+			}
+			if typedval < 0 {
+				return errors.Errorf("cannot set timeout to less than 0")
+			}
+			c.OdoSettings.BuildTimeout = &typedval
+
 		case "pushtimeout":
 			typedval, err := strconv.Atoi(value)
 			if err != nil {
@@ -408,57 +431,45 @@ func (c *PreferenceInfo) IsSet(parameter string) bool {
 // and if absent then returns default
 func (c *PreferenceInfo) GetTimeout() int {
 	// default timeout value is 1
-	if c.OdoSettings.Timeout == nil {
-		return DefaultTimeout
-	}
-	return *c.OdoSettings.Timeout
+	return util.GetIntOrDefault(c.OdoSettings.Timeout, DefaultTimeout)
+}
+
+// GetBuildTimeout gets the value set by BuildTimeout
+func (c *PreferenceInfo) GetBuildTimeout() int {
+	// default timeout value is 300
+	return util.GetIntOrDefault(c.OdoSettings.BuildTimeout, DefaultBuildTimeout)
 }
 
 // GetPushTimeout gets the value set by PushTimeout
 func (c *PreferenceInfo) GetPushTimeout() int {
 	// default timeout value is 1
-	if c.OdoSettings.PushTimeout == nil {
-		return DefaultPushTimeout
-	}
-	return *c.OdoSettings.PushTimeout
+	return util.GetIntOrDefault(c.OdoSettings.PushTimeout, DefaultPushTimeout)
 }
 
 // GetUpdateNotification returns the value of UpdateNotification from preferences
 // and if absent then returns default
 func (c *PreferenceInfo) GetUpdateNotification() bool {
-	if c.OdoSettings.UpdateNotification == nil {
-		return true
-	}
-	return *c.OdoSettings.UpdateNotification
+	return util.GetBoolOrDefault(c.OdoSettings.UpdateNotification, true)
 }
 
 // GetNamePrefix returns the value of Prefix from preferences
 // and if absent then returns default
 func (c *PreferenceInfo) GetNamePrefix() string {
-	if c.OdoSettings.NamePrefix == nil {
-		return ""
-	}
-	return *c.OdoSettings.NamePrefix
+	return util.GetStringOrEmpty(c.OdoSettings.NamePrefix)
 }
 
 // GetExperimental returns the value of Experimental from preferences
 // and if absent then returns default
 // default value: false, experimental mode is disabled by default
 func (c *PreferenceInfo) GetExperimental() bool {
-	if c.OdoSettings.Experimental == nil {
-		return false
-	}
-	return *c.OdoSettings.Experimental
+	return util.GetBoolOrDefault(c.OdoSettings.Experimental, false)
 }
 
 // GetPushTarget returns the value of PushTarget from preferences
 // and if absent then returns defualt
 // default value: kube, docker push target needs to be manually enabled
 func (c *PreferenceInfo) GetPushTarget() string {
-	if c.OdoSettings.PushTarget == nil {
-		return KubePushTarget
-	}
-	return *c.OdoSettings.PushTarget
+	return util.GetStringOrDefault(c.OdoSettings.PushTarget, KubePushTarget)
 }
 
 // FormatSupportedParameters outputs supported parameters and their description

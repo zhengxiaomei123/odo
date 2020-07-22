@@ -45,7 +45,17 @@ func (d Adapter) Delete(labels map[string]string) error {
 	return d.componentAdapter.Delete(labels)
 }
 
+// Test runs devfile test command
+func (d Adapter) Test(testCmd string, show bool) error {
+	return d.componentAdapter.Test(testCmd, show)
+}
+
 // Log show logs from component
 func (d Adapter) Log(follow, debug bool) (io.ReadCloser, error) {
 	return d.componentAdapter.Log(follow, debug)
+}
+
+// Exec executes a command in the component
+func (d Adapter) Exec(command []string) error {
+	return d.componentAdapter.Exec(command)
 }
