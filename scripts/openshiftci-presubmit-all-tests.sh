@@ -13,7 +13,7 @@ go get -u github.com/onsi/ginkgo/ginkgo
 export PATH="$PATH:$(pwd):$GOPATH/bin"
 export ARTIFACTS_DIR="/tmp/artifacts"
 export CUSTOM_HOMEDIR=$ARTIFACTS_DIR
-export ODO_BOOTSTRAPPER_IMAGE=quay.io/zhengxiaomei123/odo4z:1.1.3-s390x
+export ODO_BOOTSTRAPPER_IMAGE=registry.redhat.io/ocp-tools-4/odo-init-container-rhel8:1.1.4
 
 # Copy kubeconfig to temporary kubeconfig file
 # Read and Write permission to temporary kubeconfig file
